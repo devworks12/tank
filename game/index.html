@@ -38,7 +38,7 @@ button:focus-visible{outline:3px solid var(--signal);outline-offset:3px}
 #hEnemies{flex:1;display:flex;flex-wrap:wrap;gap:6px;justify-content:center;min-width:0}
 #hLives{display:flex;gap:4px;align-items:center}
 .hud-r{display:flex;gap:14px;align-items:center}
-#muteBtn,#pauseBtn{pointer-events:auto;background:rgba(18,21,13,.55);border:1px solid rgba(241,234,211,.25);border-radius:6px;width:34px;height:30px;display:grid;place-items:center;cursor:pointer;font-size:14px}
+#muteBtn,#pauseBtn,#zoomBtn{pointer-events:auto;background:rgba(18,21,13,.55);border:1px solid rgba(241,234,211,.25);border-radius:6px;width:34px;height:30px;display:grid;place-items:center;cursor:pointer;font-size:14px}
 
 /* tiny tank icon */
 .tk{--c:#888;position:relative;display:inline-block;width:24px;height:15px;flex:none;
@@ -49,7 +49,9 @@ button:focus-visible{outline:3px solid var(--signal);outline-offset:3px}
 .tk.big{transform:scale(1.5);transform-origin:left center;margin-right:12px}
 
 /* ---------- overlays ---------- */
-.screen{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px 16px;box-sizing:border-box;pointer-events:none}
+.screen{position:fixed;inset:0;display:flex;align-items:center;justify-content:safe center;padding:calc(env(safe-area-inset-top,0px) + 24px) 16px calc(env(safe-area-inset-bottom,0px) + 24px);box-sizing:border-box;pointer-events:none;overflow-y:auto}
+.screen > :first-child{margin-top:auto}
+.screen > :last-child{margin-bottom:auto}
 .screen > *{pointer-events:auto}
 .dim{background:radial-gradient(ellipse at center,rgba(18,21,13,.35),rgba(18,21,13,.82))}
 
@@ -128,6 +130,37 @@ kbd{font-family:var(--f-display);font-size:11px;background:var(--paper);color:va
   #hud b{font-size:19px}
   .keys{font-size:12px}
 }
+/* narrow phones: enemy roster drops to its own row under the counters */
+@media (max-width:559px){
+  #hud{flex-wrap:wrap;row-gap:6px;padding-left:12px;padding-right:12px}
+  #hud .blk:first-child{flex:1}
+  #hEnemies{order:3;flex:1 0 100%;justify-content:center}
+  .hud-r{gap:8px}
+  #hud .lbl{font-size:10px;letter-spacing:.08em}
+  #muteBtn,#pauseBtn,#zoomBtn{width:32px;height:28px}
+  .tk{width:20px;height:13px;background-position:11px 3px;background-size:9px 3px}
+  .tk::before{height:8px}
+  .tk::after{left:4px;width:8px;height:7px}
+  #intro .ribbon{padding:12px 30px}
+  .newcard{padding:8px 12px}
+}
+/* short screens (phones held sideways): compact menus so nothing spills off */
+@media (max-height:520px){
+  #title{gap:12px}
+  #title h1{font-size:clamp(40px,13vh,64px)}
+  .tagline{font-size:13px;line-height:1.55}
+  .rules{display:none}
+  .keys{padding:10px 14px}
+  .btn{padding:11px 24px;font-size:18px}
+  #results{gap:10px}
+  #results h2{font-size:36px}
+  .stats b{font-size:30px}
+  #intro{gap:8px}
+  #intro .stg{font-size:36px}
+  #intro .ribbon{padding:10px 36px}
+  #iNew .newcard{padding:6px 12px}
+  .newcard .ds{font-size:12px;line-height:1.45}
+}
 @media (prefers-reduced-motion:reduce){ .btn{transition:none} }
 </style>
 
@@ -139,6 +172,7 @@ kbd{font-family:var(--f-display);font-size:11px;background:var(--paper);color:va
   <div class="hud-r">
     <div class="blk"><span class="lbl">撃破</span><b id="hKills">0</b></div>
     <div id="hLives"></div>
+    <button id="zoomBtn" type="button" aria-label="ズーム切り替え" hidden>🔍</button>
     <button id="muteBtn" type="button" aria-label="サウンド切り替え">♪</button>
     <button id="pauseBtn" type="button" aria-label="一時停止">II</button>
   </div>
@@ -899,28 +933,26 @@ const camera = new THREE.PerspectiveCamera(30, 1, 0.5, 200);
 const camTarget = new THREE.Vector3();
 const camBase = new THREE.Vector3();
 let portrait = false, shake = 0;
-const ELEV = THREE.MathUtils.degToRad(62);
+const ELEV = THREE.MathUtils.degToRad(62), ELEV_PORTRAIT = THREE.MathUtils.degToRad(70);
+const camDir = new THREE.Vector3(), camFitTarget = new THREE.Vector3(), camFollow = new THREE.Vector3();
+let camFitDist = 30;
+const camExt = { u: 8, r: 12, top: 1, bot: -1, side: 1 };
 
 const rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4 });
 const composer = new EffectComposer(renderer, rt);
 composer.addPass(new RenderPass(scene, camera));
-const tiltShader = {
-  uniforms: { tDiffuse: { value: null }, uDir: { value: new THREE.Vector2(1, 0) }, uRes: { value: new THREE.Vector2(1, 1) }, uAmt: { value: 2.2 }, uVig: { value: 0 } },
+// light vignette only (the old tilt-shift blur hid the top/bottom of the board, worst on tall phone screens)
+const vignetteShader = {
+  uniforms: { tDiffuse: { value: null }, uVig: { value: 0.35 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }',
-  fragmentShader: `uniform sampler2D tDiffuse; uniform vec2 uDir; uniform vec2 uRes; uniform float uAmt; uniform float uVig; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uVig; varying vec2 vUv;
   void main(){
-    float d = abs(vUv.y - 0.5);
-    float k = smoothstep(0.16, 0.5, d) * uAmt;
-    vec4 s = vec4(0.); float ws = 0.;
-    for(int i=-4;i<=4;i++){ float fi=float(i); float w=exp(-fi*fi/7.); s += texture2D(tDiffuse, vUv + uDir*fi*k/uRes)*w; ws+=w; }
-    vec4 col = s/ws;
-    if(uVig>0.){ vec2 q=vUv-0.5; col.rgb *= mix(1., smoothstep(0.85, 0.2, length(q*vec2(1.,1.15))), uVig); }
+    vec4 col = texture2D(tDiffuse, vUv);
+    vec2 q = vUv - 0.5; col.rgb *= mix(1., smoothstep(0.95, 0.3, length(q*vec2(1.,1.15))), uVig);
     gl_FragColor = col;
   }`,
 };
-const tiltH = new ShaderPass(tiltShader); tiltH.uniforms.uDir.value.set(1, 0);
-const tiltV = new ShaderPass(tiltShader); tiltV.uniforms.uDir.value.set(0, 1); tiltV.uniforms.uVig.value = 0.55;
-composer.addPass(tiltH); composer.addPass(tiltV);
+composer.addPass(new ShaderPass(vignetteShader));
 composer.addPass(new OutputPass());
 
 // ============================================================
@@ -2114,15 +2146,20 @@ function fitCamera() {
   composer.setPixelRatio(renderer.getPixelRatio());
   composer.setSize(w, h);
   const pr = renderer.getPixelRatio();
-  for (const pass of [tiltH, tiltV]) { pass.uniforms.uRes.value.set(w * pr, h * pr); pass.uniforms.uAmt.value = 2.0 * pr; }
   const scale = h * pr / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
   smoke.mat.uniforms.uScale.value = fire.mat.uniforms.uScale.value = scale;
   camera.aspect = w / h;
   portrait = h > w * 1.08;
-  const dir = portrait ? new THREE.Vector3(-Math.cos(ELEV), Math.sin(ELEV), 0) : new THREE.Vector3(0, Math.sin(ELEV), Math.cos(ELEV));
+  // tall phones look down more steeply so the near edge doesn't eat the narrow width
+  const elev = portrait ? ELEV_PORTRAIT : ELEV;
+  const dir = portrait ? new THREE.Vector3(-Math.cos(elev), Math.sin(elev), 0) : new THREE.Vector3(0, Math.sin(elev), Math.cos(elev));
+  camDir.copy(dir);
+  const small = Math.min(w, h) < 600;
+  const mx = small ? 0.55 : 1;   // margin around the walls, in tiles
   const corners = [];
-  for (const sxx of [-1, 1]) for (const szz of [-1, 1]) for (const y of [0, 0.9]) corners.push(new THREE.Vector3(sxx * (W / 2 + 1), y, szz * (H / 2 + 1)));
-  const topM = 1 - 2 * (54 / h), botM = -1 + 2 * (10 / h), sideM = 0.97;
+  for (const sxx of [-1, 1]) for (const szz of [-1, 1]) for (const y of [0, 0.9]) corners.push(new THREE.Vector3(sxx * (W / 2 + mx), y, szz * (H / 2 + mx)));
+  const hudH = w < 560 ? 78 : 54;   // narrow HUD wraps to two rows
+  const topM = 1 - 2 * (hudH / h), botM = -1 + 2 * ((small ? 4 : 10) / h), sideM = small ? 0.995 : 0.97;
   const v = new THREE.Vector3();
   camTarget.set(0, 0, 0);
   const upG = portrait ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 0, -1);
@@ -2147,8 +2184,78 @@ function fitCamera() {
   camera.updateProjectionMatrix();
   camRightG.setFromMatrixColumn(camera.matrixWorld, 0); camRightG.y = 0; camRightG.normalize();
   camUpG.copy(upG);
+  camFitTarget.copy(camTarget); camFitDist = d;
+  Object.assign(camExt, { u: (portrait ? W : H) / 2 + mx, r: (portrait ? H : W) / 2 + mx, top: topM, bot: botM, side: sideM });
+  camFollow.copy(camTarget);
+  // fog starts just past the far wall whatever the camera distance (portrait pulls the camera far back)
+  scene.fog.near = d + 6; scene.fog.far = d + 38;
+  $('zoomBtn').hidden = !small;
+  updateCamBase(0, true);
 }
 addEventListener('resize', fitCamera);
+
+// Zoom (phones): pull the camera in and follow the player, clamped so the view stays over the board.
+const ZOOM_IN = 1.5;
+let zoomOn = store.get('tank.zoom', null);
+function zoomFactor() {
+  const small = Math.min(innerWidth, innerHeight) < 600;
+  const on = zoomOn === null ? small : zoomOn;
+  return (small && on && G.player && G.state !== 'title' && G.state !== 'over') ? ZOOM_IN : 1;
+}
+let zoomCur = 1;
+function updateCamBase(dt, snap) {
+  const z = zoomFactor();
+  zoomCur = snap ? z : zoomCur + (z - zoomCur) * Math.min(1, dt * 4);
+  const k = 1 - 1 / zoomCur;   // 0 when fully zoomed out
+  let tx = camFitTarget.x, tz = camFitTarget.z;
+  if (k > 0.001 && G.player) {
+    const lx = k * (W / 2 + 0.5), lz = k * (H / 2 + 0.5);
+    tx = clamp(G.player.x, camFitTarget.x - lx, camFitTarget.x + lx);
+    tz = clamp(G.player.z, camFitTarget.z - lz, camFitTarget.z + lz);
+  }
+  const f = snap ? 1 : Math.min(1, dt * 5);
+  camFollow.x += (tx - camFollow.x) * f; camFollow.z += (tz - camFollow.z) * f;
+  // blend toward the fitted framing as the zoom eases out
+  const bx = camFitTarget.x + (camFollow.x - camFitTarget.x) * Math.min(1, k * 3);
+  const bz = camFitTarget.z + (camFollow.z - camFitTarget.z) * Math.min(1, k * 3);
+  camBase.set(bx, 0, bz).addScaledVector(camDir, camFitDist / zoomCur);
+  if (zoomCur > 1.01) clampView();
+}
+// Nudge the zoomed camera so no empty table shows past the walls (perspective makes a plain world clamp overshoot on the near side).
+const _p = new THREE.Vector3(), _q = new THREE.Vector3();
+function ndcOf(v, out) { return out.copy(v).project(camera); }
+function clampView() {
+  const eU = camExt.u, eR = camExt.r;
+  const near = new THREE.Vector3().addScaledVector(camUpG, -eU), far = new THREE.Vector3().addScaledVector(camUpG, eU);
+  const lft = near.clone().addScaledVector(camRightG, -eR), rgt = near.clone().addScaledVector(camRightG, eR);
+  for (let it = 0; it < 3; it++) {
+    camera.position.copy(camBase); camera.updateMatrixWorld();
+    // vertical (screen up = camUpG)
+    const yN = ndcOf(near, _p).y, sN = ndcOf(_q.copy(near).add(camUpG), _q).y - yN;
+    const yF = ndcOf(far, _p).y, sF = ndcOf(_q.copy(far).add(camUpG), _q).y - yF;
+    let t = 0;
+    if (yN > camExt.bot) t = (yN - camExt.bot) / sN;
+    else if (yF < camExt.top) t = -(camExt.top - yF) / sF;
+    // horizontal (screen right = camRightG), checked on the near row where the board is widest
+    const xL = ndcOf(lft, _p).x, sL = ndcOf(_q.copy(lft).add(camRightG), _q).x - xL;
+    const xR = ndcOf(rgt, _p).x;
+    let u = 0;
+    if (xL > -camExt.side) u = (xL + camExt.side) / sL;
+    else if (xR < camExt.side) u = -(camExt.side - xR) / sL;
+    if (Math.abs(t) < 1e-3 && Math.abs(u) < 1e-3) break;
+    camBase.addScaledVector(camUpG, t).addScaledVector(camRightG, u);
+  }
+  camera.position.copy(camBase); camera.updateMatrixWorld();
+}
+$('zoomBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  zoomOn = zoomFactor() === 1;
+  store.set('tank.zoom', zoomOn);
+  $('zoomBtn').style.opacity = zoomOn ? 1 : 0.55;
+});
+if (zoomOn === false) $('zoomBtn').style.opacity = 0.55;
+// phones: show the touch controls help from the start instead of the keyboard one
+if (isCoarse) { $('keysPC').hidden = true; $('keysTouch').hidden = false; }
 
 // ============================================================
 // UI / flow
@@ -2319,7 +2426,7 @@ $('quitBtn').addEventListener('click', () => { show('pause', false); endRun(fals
 $('muteBtn').addEventListener('click', e => { e.stopPropagation(); toggleMute(); });
 $('pauseBtn').addEventListener('click', e => { e.stopPropagation(); togglePause(); });
 $('intro').addEventListener('pointerdown', () => { AU.init(); if (G.stateT > 0.6) beginPlay(); });
-for (const id of ['startBtn', 'retryBtn', 'toTitleBtn', 'resumeBtn', 'quitBtn', 'muteBtn', 'pauseBtn'])
+for (const id of ['startBtn', 'retryBtn', 'toTitleBtn', 'resumeBtn', 'quitBtn', 'muteBtn', 'pauseBtn', 'zoomBtn'])
   $(id).addEventListener('pointerdown', e => { if (e.pointerType === 'touch') setTouchMode(); });
 
 // ============================================================
@@ -2389,6 +2496,7 @@ function tick(rdt) {
   updateHud();
   // camera shake
   shake = Math.max(0, shake - rdt * 1.4);
+  updateCamBase(rdt);
   camera.position.copy(camBase);
   if (shake > 0) camera.position.add(new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(shake * 0.35));
   if (G.state === 'title') camera.position.x += Math.sin(G.time * 0.25) * 0.6;
