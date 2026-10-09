@@ -25,6 +25,7 @@ body{margin:0;background:var(--ground);color:var(--paper);font-family:var(--f-bo
   user-select:none;-webkit-user-select:none;touch-action:none;-webkit-tap-highlight-color:transparent}
 #gl{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:none}
 body.menu #gl{cursor:default}
+#vig{position:fixed;inset:0;pointer-events:none;background:radial-gradient(ellipse 75% 70% at 50% 50%,transparent 55%,rgba(10,12,6,.38) 100%)}
 button{font:inherit;color:inherit}
 button:focus-visible{outline:3px solid var(--signal);outline-offset:3px}
 
@@ -120,6 +121,12 @@ kbd{font-family:var(--f-display);font-size:11px;background:var(--paper);color:va
 #touch{position:fixed;inset:0;pointer-events:none}
 #stick{position:absolute;width:120px;height:120px;margin:-60px 0 0 -60px;border-radius:50%;border:2px solid rgba(241,234,211,.35);background:rgba(18,21,13,.25)}
 #knob{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;border-radius:50%;background:rgba(241,234,211,.55)}
+#stickRest{position:absolute;left:calc(28px + env(safe-area-inset-left,0px));bottom:calc(28px + env(safe-area-inset-bottom,0px));width:96px;height:96px;border-radius:50%;
+  border:2px dashed rgba(241,234,211,.22);display:grid;place-items:center;font-size:10px;opacity:.7;text-align:center;line-height:1.3}
+#stickRest span{max-width:5em}
+.tapfx{position:absolute;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;border:3px solid rgba(156,192,255,.95);display:none;
+  animation:tapfx .32s ease-out forwards;pointer-events:none}
+@keyframes tapfx{from{transform:scale(.35);opacity:1}to{transform:scale(1.25);opacity:0}}
 #mineBtn{position:absolute;right:calc(18px + env(safe-area-inset-right,0px));bottom:calc(22px + env(safe-area-inset-bottom,0px));width:74px;height:74px;border-radius:50%;
   border:3px solid var(--ink);background:var(--signal);color:var(--ink);font-family:var(--f-display);font-size:15px;pointer-events:auto;box-shadow:0 4px 0 #a8831a}
 #mineBtn[disabled]{opacity:.4}
@@ -165,6 +172,7 @@ kbd{font-family:var(--f-display);font-size:11px;background:var(--paper);color:va
 </style>
 
 <canvas id="gl"></canvas>
+<div id="vig"></div>
 
 <div id="hud" hidden>
   <div class="blk"><span class="lbl">STAGE</span><b id="hStage">01</b><span class="of" id="hOf">/30</span></div>
@@ -193,8 +201,8 @@ kbd{font-family:var(--f-display);font-size:11px;background:var(--paper);color:va
     <div><kbd>M</kbd>サウンド</div>
   </div>
   <div class="keys" id="keysTouch" hidden>
-    <div>左側をドラッグ：移動</div>
-    <div>右側をタップ：その地点へ砲撃</div>
+    <div>ドラッグ（左側）：移動</div>
+    <div>タップ（どこでも）：その地点へ砲撃</div>
     <div>黄色いボタン：地雷</div>
   </div>
   <div class="rules">砲弾は壁で1回跳ね返り、自分の弾にも当たる。地雷は約10秒で爆発し、コルクのブロックを吹き飛ばす。5ステージごとに残機が1つ増える。</div>
@@ -239,6 +247,7 @@ kbd{font-family:var(--f-display);font-size:11px;background:var(--paper);color:va
 </div>
 
 <div id="touch" hidden>
+  <div id="stickRest"><span>ドラッグで移動</span></div>
   <div id="stick" hidden><div id="knob"></div></div>
   <button id="mineBtn" type="button">地雷</button>
 </div>
@@ -246,10 +255,6 @@ kbd{font-family:var(--f-display);font-size:11px;background:var(--paper);color:va
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>
 <script type="module">
 import * as THREE from 'three';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -902,11 +907,16 @@ const MUSIC = {
 // Renderer, scene, camera, post
 // ============================================================
 const canvas = $('gl');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+// Render straight to the canvas (built-in MSAA, tone mapping in the materials). The old float render target +
+// two full-screen passes cost a lot of fill rate on phones; the vignette is now a CSS overlay.
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 const isCoarse = matchMedia('(pointer: coarse)').matches;
-renderer.setPixelRatio(Math.min(devicePixelRatio, isCoarse ? 1.75 : 2));
+// Dynamic resolution: start at the cap and step down while frames run slow, back up when there is headroom.
+const PR_MAX = Math.min(devicePixelRatio, isCoarse ? 1.5 : 2), PR_MIN = Math.min(PR_MAX, isCoarse ? 0.8 : 1);
+let prCur = PR_MAX;
+renderer.setPixelRatio(prCur);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = isCoarse ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 
@@ -922,7 +932,7 @@ scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff0d6, 2.5);
 sun.position.set(-7, 16, 9);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.setScalar(isCoarse ? 1024 : 2048);
 Object.assign(sun.shadow.camera, { left: -15, right: 15, top: 11, bottom: -11, near: 1, far: 45 });
 sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.025; sun.shadow.radius = 3;
 scene.add(sun);
@@ -938,22 +948,6 @@ const camDir = new THREE.Vector3(), camFitTarget = new THREE.Vector3(), camFollo
 let camFitDist = 30;
 const camExt = { u: 8, r: 12, top: 1, bot: -1, side: 1 };
 
-const rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4 });
-const composer = new EffectComposer(renderer, rt);
-composer.addPass(new RenderPass(scene, camera));
-// light vignette only (the old tilt-shift blur hid the top/bottom of the board, worst on tall phone screens)
-const vignetteShader = {
-  uniforms: { tDiffuse: { value: null }, uVig: { value: 0.35 } },
-  vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }',
-  fragmentShader: `uniform sampler2D tDiffuse; uniform float uVig; varying vec2 vUv;
-  void main(){
-    vec4 col = texture2D(tDiffuse, vUv);
-    vec2 q = vUv - 0.5; col.rgb *= mix(1., smoothstep(0.95, 0.3, length(q*vec2(1.,1.15))), uVig);
-    gl_FragColor = col;
-  }`,
-};
-composer.addPass(new ShaderPass(vignetteShader));
-composer.addPass(new OutputPass());
 
 // ============================================================
 // Textures
@@ -1247,7 +1241,10 @@ class Particles {
         void main(){ vA=alpha; vC=color; vec4 mv=modelViewMatrix*vec4(position,1.); gl_PointSize = alpha>0.? size*uScale/(-mv.z) : 0.; gl_Position=projectionMatrix*mv; }`,
       fragmentShader: `varying float vA; varying vec3 vC;
         void main(){ vec2 p=gl_PointCoord-.5; float d=length(p); float a=smoothstep(.5,.12,d)*vA; if(a<.004) discard;
-        vec3 c = vC * (${additive ? '1.' : '0.8 + 0.4*(0.5-p.y)'}); gl_FragColor=vec4(c,a); }`,
+        vec3 c = vC * (${additive ? '1.' : '0.8 + 0.4*(0.5-p.y)'}); gl_FragColor=vec4(c, a * ${additive ? '0.5' : '1.'});
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+        }`,
       transparent: true, depthWrite: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
     });
     this.points = new THREE.Points(g, this.mat); this.points.frustumCulled = false;
@@ -1320,7 +1317,7 @@ const debris = new Debris(400);
 const rings = [];
 const ringGeo = new THREE.RingGeometry(0.8, 1, 48); ringGeo.rotateX(-Math.PI / 2);
 function shockwave(x, z, r, color = 0xffe2a8) {
-  const m = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const m = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.45, depthWrite: false, blending: THREE.AdditiveBlending }));
   m.position.set(x, 0.05, z); scene.add(m);
   rings.push({ m, t: 0, r });
 }
@@ -1329,7 +1326,7 @@ function updateRings(dt) {
     const R = rings[i]; R.t += dt;
     const k = R.t / 0.45;
     R.m.scale.setScalar(0.2 + R.r * Math.pow(k, 0.5));
-    R.m.material.opacity = 0.8 * (1 - k);
+    R.m.material.opacity = 0.45 * (1 - k);
     if (k >= 1) { scene.remove(R.m); R.m.material.dispose(); rings.splice(i, 1); }
   }
 }
@@ -1907,10 +1904,13 @@ function aiThink(t) {
     if (cfg.aim === 'sweep') {
       const r = simulateShot(t, t.tur, cfg.bounces);
       ai.plan = r.hit === 1 ? t.tur : null;
-    } else {
+      ai.planKind = ai.plan === null ? '' : 'attack';
+    } else if (cfg.aim !== 'bank' || aiBankBudget > 0) {
+      // bank-shot searches are the expensive part: at most a couple per frame so several snipers can't stack into one hitch
+      if (cfg.aim === 'bank') aiBankBudget--;
       ai.plan = planShot(t);
-    }
-    ai.planKind = ai.plan === null ? '' : 'attack';
+      ai.planKind = ai.plan === null ? '' : 'attack';
+    } else ai.thinkT = 0.02;   // budget spent this frame: think again next frame
   }
   // mines
   if (cfg.mines && t.mines < cfg.mines && p && p.alive && !danger[ci]) {
@@ -2021,29 +2021,69 @@ function setTouchMode() {
   $('keysPC').hidden = true; $('keysTouch').hidden = false;
   if (G.state === 'play' || G.state === 'intro') $('touch').hidden = false;
 }
+// Touch scheme (tap = shoot there, drag = drive):
+//  - a touch on the right side fires at that spot the instant it lands; keep the finger down and drag to re-aim
+//  - a touch on the left side is undecided: drag past a few px and it becomes the floating stick,
+//    lift it quickly without moving and it is a tap that fires at that spot
+//  - while the stick is held, every other touch anywhere fires immediately (so the left side never blocks shooting)
+const STICK_MAX = 46, TAP_SLOP = 11, TAP_MS = 320;
+const pend = new Map();   // undecided left-side touches: id -> {x, y, t}
+function fireAtTouch(x, y) {
+  input.aimX = x; input.aimY = y; input.padAim = null;
+  if (G.state !== 'play') return;
+  input.fire = true;
+  tapFx(x, y);
+}
+function startStick(id, x, y) {
+  touch.stickId = id; touch.sx0 = x; touch.sy0 = y;
+  const s = $('stick'); s.hidden = false; s.style.left = x + 'px'; s.style.top = y + 'px';
+  $('knob').style.transform = '';
+  $('stickRest').hidden = true;
+}
 function touchDown(e) {
   setTouchMode();
-  if (G.state === 'intro' && G.stateT > 0.6) { beginPlay(); }
-  if (e.clientX < innerWidth * 0.42 && touch.stickId === null) {
-    touch.stickId = e.pointerId; touch.sx0 = e.clientX; touch.sy0 = e.clientY;
-    const s = $('stick'); s.hidden = false; s.style.left = e.clientX + 'px'; s.style.top = e.clientY + 'px';
-    $('knob').style.transform = '';
-  } else if (touch.aimId === null) {
-    touch.aimId = e.pointerId; input.aimX = e.clientX; input.aimY = e.clientY; input.padAim = null;
-  }
+  if (G.state === 'intro') { if (G.stateT > 0.6) beginPlay(); return; }
+  const x = e.clientX, y = e.clientY;
+  if (touch.stickId === null && x < innerWidth * 0.42) { pend.set(e.pointerId, { x, y, t: e.timeStamp }); return; }
+  touch.aimId = e.pointerId;
+  fireAtTouch(x, y);
 }
 function touchMove(e) {
+  const pd = pend.get(e.pointerId);
+  if (pd) {
+    if (Math.hypot(e.clientX - pd.x, e.clientY - pd.y) < TAP_SLOP) return;
+    pend.delete(e.pointerId);
+    if (touch.stickId === null) startStick(e.pointerId, pd.x, pd.y);
+  }
   if (e.pointerId === touch.stickId) {
     let dx = e.clientX - touch.sx0, dy = e.clientY - touch.sy0;
-    const d = Math.hypot(dx, dy), max = 50;
-    if (d > max) { dx *= max / d; dy *= max / d; }
-    input.sx = dx / max; input.sy = -dy / max;
+    let d = Math.hypot(dx, dy);
+    if (d > STICK_MAX) {   // floating base: drag the anchor along so reversing direction responds at once
+      const k = (d - STICK_MAX) / d;
+      touch.sx0 += dx * k; touch.sy0 += dy * k; dx -= dx * k; dy -= dy * k; d = STICK_MAX;
+      const s = $('stick'); s.style.left = touch.sx0 + 'px'; s.style.top = touch.sy0 + 'px';
+    }
+    // small dead zone, then full speed from ~70% deflection
+    const m = d / STICK_MAX, out = m < 0.12 ? 0 : Math.min(1, (m - 0.12) / 0.58);
+    input.sx = d > 0 ? dx / d * out : 0; input.sy = d > 0 ? -dy / d * out : 0;
     $('knob').style.transform = `translate(${dx}px,${dy}px)`;
   } else if (e.pointerId === touch.aimId) { input.aimX = e.clientX; input.aimY = e.clientY; }
 }
 function touchUp(e, cancel) {
-  if (e.pointerId === touch.stickId) { touch.stickId = null; input.sx = input.sy = 0; $('stick').hidden = true; }
-  else if (e.pointerId === touch.aimId) { touch.aimId = null; if (!cancel) input.fire = true; }
+  const pd = pend.get(e.pointerId);
+  if (pd) { pend.delete(e.pointerId); if (!cancel && e.timeStamp - pd.t < TAP_MS) fireAtTouch(pd.x, pd.y); return; }
+  if (e.pointerId === touch.stickId) {
+    touch.stickId = null; input.sx = input.sy = 0; $('stick').hidden = true;
+    $('stickRest').hidden = false;
+  } else if (e.pointerId === touch.aimId) touch.aimId = null;
+}
+// tap feedback: a ring that pops where the shot was aimed
+const tapPool = [];
+function tapFx(x, y) {
+  let el = tapPool.find(n => !n.busy);
+  if (!el) { el = document.createElement('i'); el.className = 'tapfx'; $('touch').appendChild(el); tapPool.push(el); el.addEventListener('animationend', () => { el.busy = false; el.style.display = 'none'; }); }
+  el.busy = true; el.style.display = 'block'; el.style.left = x + 'px'; el.style.top = y + 'px';
+  el.style.animation = 'none'; void el.offsetWidth; el.style.animation = '';
 }
 $('mineBtn').addEventListener('pointerdown', e => { e.stopPropagation(); AU.init(); input.mine = true; });
 
@@ -2140,14 +2180,29 @@ function updateReticle() {
 // ============================================================
 // Camera
 // ============================================================
+function applyResolution() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setPixelRatio(prCur);
+  renderer.setSize(w, h, false);
+  const scale = h * prCur / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+  smoke.mat.uniforms.uScale.value = fire.mat.uniforms.uScale.value = scale;
+}
+// frame-time watcher behind the dynamic resolution
+const perf = { acc: 0, n: 0, good: 0 };
+function watchPerf(ms) {
+  if (document.hidden || ms > 250) return;   // ignore tab switches / hitches from loading
+  perf.acc += ms; perf.n++;
+  if (perf.acc < 1000) return;
+  const avg = perf.acc / perf.n; perf.acc = 0; perf.n = 0;
+  if (avg > 21 && prCur > PR_MIN) {          // under ~48fps: drop resolution 15%
+    prCur = Math.max(PR_MIN, prCur * 0.85); perf.good = 0; applyResolution();
+  } else if (avg < 18) {
+    if (++perf.good >= 4 && prCur < PR_MAX) { prCur = Math.min(PR_MAX, prCur * 1.1); perf.good = 0; applyResolution(); }
+  } else perf.good = 0;
+}
 function fitCamera() {
   const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h, false);
-  composer.setPixelRatio(renderer.getPixelRatio());
-  composer.setSize(w, h);
-  const pr = renderer.getPixelRatio();
-  const scale = h * pr / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
-  smoke.mat.uniforms.uScale.value = fire.mat.uniforms.uScale.value = scale;
+  applyResolution();
   camera.aspect = w / h;
   portrait = h > w * 1.08;
   // tall phones look down more steeply so the near edge doesn't eat the narrow width
@@ -2432,7 +2487,9 @@ for (const id of ['startBtn', 'retryBtn', 'toTitleBtn', 'resumeBtn', 'quitBtn', 
 // ============================================================
 // Main loop
 // ============================================================
+let aiBankBudget = 2;
 function updatePlay(dt) {
+  aiBankBudget = 2;
   computeDanger();
   playerUpdate(dt);
   for (const t of tanks) if (t.alive && t.team === 1 && G.state === 'play') aiUpdate(t, dt);
@@ -2467,6 +2524,7 @@ function titleIdle(dt) {
 let last = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
+  watchPerf(now - last);
   const rdt = Math.min(0.05, (now - last) / 1000); last = now;
   tick(rdt);
 }
@@ -2500,7 +2558,7 @@ function tick(rdt) {
   camera.position.copy(camBase);
   if (shake > 0) camera.position.add(new THREE.Vector3(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(shake * 0.35));
   if (G.state === 'title') camera.position.x += Math.sin(G.time * 0.25) * 0.6;
-  composer.render();
+  renderer.render(scene, camera);
 }
 
 // console handle for testing: __tank.step(seconds) advances the game while the tab is in the background
